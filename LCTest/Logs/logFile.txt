@@ -1,0 +1,15 @@
+2015-12-09 16:27:10.9081|INFO|LCTest.Controllers.MassiveOrder|载入用户信息
+2015-12-09 16:27:11.3613|INFO|LCTest.Controllers.MassiveOrder|载入完成
+2015-12-09 17:24:06.6804|INFO|LCTest.Controllers.MassiveOrder|载入用户信息
+2015-12-09 17:24:07.0554|INFO|LCTest.Controllers.MassiveOrder|载入完成
+2015-12-09 17:30:50.1777|INFO|LCTest.Controllers.MassiveOrder|载入用户信息
+2015-12-09 17:30:50.5499|INFO|LCTest.Controllers.MassiveOrder|载入完成
+2015-12-09 17:30:50.5499|INFO|LCTest.Controllers.MassiveOrder|载入商品与库存信息
+2015-12-09 17:30:50.5499|INFO|LCTest.Controllers.MassiveOrder|载入完成
+2015-12-09 17:30:50.5499|INFO|LCTest.Controllers.MassiveOrder|载入订单信息
+2015-12-09 17:31:18.2834|INFO|LCTest.Controllers.MassiveOrder|载入用户信息
+2015-12-09 17:31:18.6946|INFO|LCTest.Controllers.MassiveOrder|载入完成
+2015-12-09 17:31:18.6946|INFO|LCTest.Controllers.MassiveOrder|载入商品与库存信息
+2015-12-09 17:31:18.6946|INFO|LCTest.Controllers.MassiveOrder|载入完成
+2015-12-09 17:31:18.6946|INFO|LCTest.Controllers.MassiveOrder|载入订单信息
+2015-12-09 17:31:18.7102|INFO|LCTest.Controllers.MassiveOrder|载入完成
