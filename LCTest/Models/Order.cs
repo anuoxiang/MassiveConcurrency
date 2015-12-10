@@ -20,7 +20,8 @@ namespace LCTest.Models
 
     public enum OrderStatus
     {
-        Normal,
+        InCart,
+        Submited,
         Saved
     }
 }

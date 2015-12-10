@@ -1,6 +1,7 @@
 ﻿@{
-    ViewBag.Title = "About";
+    ViewBag.Title = "抢购商品";
 }
+@model List<LCTest.Models.ItemStock>
 
 <hgroup class="title">
     <h1>@ViewBag.Title.</h1>
@@ -8,17 +9,12 @@
 </hgroup>
 
 <article>
-    <p>
-        Use this area to provide additional information.
-    </p>
+    @foreach (var m in Model)
+    {
+        <p>@m.Name &nbsp;&nbsp;<button itemid="@m.Id">抢购</button>剩余(@m.Stock)件</p>
+    }
 
-    <p>
-        Use this area to provide additional information.
-    </p>
-
-    <p>
-        Use this area to provide additional information.
-    </p>
+    <button onclick="Order();">下单</button>
 </article>
 
 <aside>
@@ -32,3 +28,26 @@
         <li>@Html.ActionLink("Contact", "Contact", "Home")</li>
     </ul>
 </aside>
+@section scripts{
+    <script type="text/javascript">
+        $(window).ready(function() {
+            $("button").click(function() {
+                if ($(this).attr("itemid") != undefined) {
+                    $.get("/Home/AddToCart", { Id: $(this).attr("itemid") }, function(r) {
+                        if (r)
+                            alert("已经加入购物车");
+                        else
+                            alert("同类型的商品只能秒杀一件");
+                    });
+                }
+            });
+
+        });
+
+        function Order() {
+            $.get("/Home/Order", null, function (r) {
+                alert(r);
+            });
+        }
+    </script>
+}
