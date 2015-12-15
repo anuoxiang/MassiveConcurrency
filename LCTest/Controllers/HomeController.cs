@@ -7,12 +7,14 @@ using System.Web.Mvc;
 using System.Xml.XPath;
 using LCTest.Models;
 using Microsoft.Ajax.Utilities;
+using NLog;
 using WebGrease.Css.Extensions;
 
 namespace LCTest.Controllers
 {
     public class HomeController : Controller
     {
+        private static Logger logger = LogManager.GetCurrentClassLogger();
         public ActionResult Index()
         {
             ViewBag.Message = "Modify this template to jump-start your ASP.NET MVC application.";
@@ -34,7 +36,7 @@ namespace LCTest.Controllers
                 if (usrn == null) return RedirectToAction("Index");
                 Session["customer"] = usrn;
                 Session["cart"] = new Models.Order { customerId = (int)UserId, Status = OrderStatus.InCart };
-
+                logger.Info("登录者【{0}】", UserId);
             }
 
             return View(MassiveOrder.ItemStocks);
@@ -63,9 +65,8 @@ namespace LCTest.Controllers
             if (order.Items.Where(r => r.ClassId == item.ClassId).Count() > 0)
                 return Json(false, JsonRequestBehavior.AllowGet);
             //历史订单重复购买
-            List<OrderDetail> lists = new List<OrderDetail>();
-            MassiveOrder.Orders.Where(r => r.customerId == customer.Id)
-                .Select(r => r.Items).ForEach(i => lists.AddRange(i));
+            List<OrderDetail> lists =
+                MassiveOrder.Bought(customer.Id);
             if (lists.Where(r => r.ClassId == item.ClassId).Count() > 0)
                 return Json(false, JsonRequestBehavior.AllowGet);
             //加入购物车
@@ -79,6 +80,7 @@ namespace LCTest.Controllers
                 ClassId = item.ClassId
             });
             Session["cart"] = order;
+            logger.Info("添加购物车【{0}】：【{1}】", customer.Id, item.Id);
             return Json(true, JsonRequestBehavior.AllowGet);
         }
 
@@ -88,8 +90,25 @@ namespace LCTest.Controllers
             Models.Customer customer = (Models.Customer)Session["customer"];
 
             //没有登录
-            if (order == null || customer == null || order.Items.Count() == 0)
-                return Json("未登录或未购物", JsonRequestBehavior.AllowGet);
+            if (customer == null)
+            {
+                logger.Info("收到无session用户");
+                return Json("未登录", JsonRequestBehavior.AllowGet);
+            }
+
+            if (order == null)
+            {
+                logger.Info("登录者【{0}】订单Session丢失", customer.Id);
+                return Json("订单session丢失", JsonRequestBehavior.AllowGet);
+            }
+            if (!order.Items.Any())
+            {
+                logger.Info("登录者【{0}】未购物", customer.Id);
+                return Json("未购物", JsonRequestBehavior.AllowGet);
+            }
+
+            logger.Info("下单【{0}】", customer.Id);
+
             //生成订单
             string Msg;
             MakeOrderResult result = MassiveOrder.MakeOrder(customer, order, out Msg);
@@ -121,7 +140,7 @@ namespace LCTest.Controllers
             List<Order> orders = new List<Order>();
             using (SqlConnection conn = new SqlConnection())
             {
-                conn.ConnectionString = "Data Source=(LocalDb)\\v11.0;Initial Catalog=LCTest;Integrated Security=True";
+                conn.ConnectionString = "Data Source=192.168.1.2;Initial Catalog=LCTest;Integrated Security=false;User ID=sa;Password=Kdc123456;";
                 conn.Open();
                 SqlCommand command = new SqlCommand(string.Format("SELECT Id FROM EB_Order WHERE customerId = {0}", usr.Id), conn);
                 SqlDataReader reader = command.ExecuteReader();

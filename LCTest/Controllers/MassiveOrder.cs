@@ -7,6 +7,7 @@ using System.Threading;
 using System.Web;
 using LCTest.Models;
 using NLog;
+using WebGrease.Css.Extensions;
 
 
 namespace LCTest.Controllers
@@ -31,10 +32,16 @@ namespace LCTest.Controllers
         public static List<Models.ItemStock> ItemStocks { get; set; }
 
 
-        public static readonly SqlConnection conn = new SqlConnection();
+        public static readonly SqlConnection connforOrder = new SqlConnection();
+        public static readonly SqlConnection connforItem = new SqlConnection();
         private static Logger logger = LogManager.GetCurrentClassLogger();
 
         private static bool IsReady = false;
+        private const string ServerAddr = "192.168.1.2";
+
+        //private const string connStr = "Data Source=192.168.1.2;Initial Catalog=LCTest;Integrated Security=false;User ID=sa;Password=Kdc123456;";
+        private const string connStr = "Data Source=.\\SQLEXPRESS;Initial Catalog=LCTest;Integrated Security=true;";
+        //private const string ServerAddr = "";
         #region 一次运行
 
         /// <summary>
@@ -45,9 +52,8 @@ namespace LCTest.Controllers
             Customers = new List<Customer>();
             Orders = new List<Order>();
             ItemStocks = new List<ItemStock>();
-            conn.ConnectionString = "Data Source=(LocalDb)\\v11.0;Initial Catalog=LCTest;Integrated Security=True";
-            //conn.Open();
-
+            connforOrder.ConnectionString = connStr;
+            connforItem.ConnectionString = connStr;
         }
 
         public static void Init()
@@ -64,10 +70,13 @@ namespace LCTest.Controllers
         private static void LoadCustomers()
         {
             logger.Info("载入用户信息");
-            SqlCommand command = new SqlCommand("SELECT Id,OpenId,Name FROM CRM_Customer;", conn);
-            conn.Open();
+            SqlCommand command = new SqlCommand("SELECT Id,OpenId,Name FROM CRM_Customer;", connforOrder);
+            connforOrder.Open();
             SqlDataReader reader = command.ExecuteReader();
-            Monitor.TryEnter(Customers, 2000);
+            while (!Monitor.TryEnter(Customers, 200))
+            {
+                Thread.Sleep(100);
+            }
             if (reader.HasRows)
             {
                 while (reader.Read())
@@ -82,7 +91,7 @@ namespace LCTest.Controllers
             }
             Monitor.Exit(Customers);
             reader.Close();
-            conn.Close();
+            connforOrder.Close();
             logger.Info("载入完成");
         }
 
@@ -92,10 +101,13 @@ namespace LCTest.Controllers
         private static void LoadItems()
         {
             logger.Info("载入商品与库存信息");
-            SqlCommand command = new SqlCommand("SELECT Id,classId,Stock,Name FROM EB_Item;", conn);
-            conn.Open();
+            SqlCommand command = new SqlCommand("SELECT Id,classId,Stock,Name FROM EB_Item;", connforOrder);
+            connforOrder.Open();
             SqlDataReader reader = command.ExecuteReader();
-            Monitor.TryEnter(ItemStocks, 2000);
+            while (!Monitor.TryEnter(ItemStocks, 200))
+            {
+                Thread.Sleep(100);
+            }
             if (reader.HasRows)
             {
                 while (reader.Read())
@@ -112,17 +124,20 @@ namespace LCTest.Controllers
             }
             Monitor.Exit(ItemStocks);
             reader.Close();
-            conn.Close();
+            connforOrder.Close();
             logger.Info("载入完成");
         }
 
         private static void LoadOrders()
         {
             logger.Info("载入订单信息");
-            SqlCommand command = new SqlCommand("SELECT Id,customerId FROM EB_Order;", conn);
-            conn.Open();
+            SqlCommand command = new SqlCommand("SELECT Id,customerId FROM EB_Order;", connforOrder);
+            connforOrder.Open();
             SqlDataReader reader = command.ExecuteReader();
-            Monitor.TryEnter(Orders, 2000);
+            while (!Monitor.TryEnter(Orders, 200))
+            {
+                Thread.Sleep(100);
+            }
             if (reader.HasRows)
             {
                 while (reader.Read())
@@ -144,10 +159,10 @@ namespace LCTest.Controllers
             {
                 while (reader.Read())
                 {
-                    var order = Orders.Where(r => r.Id == reader.GetInt32(1)).First();
+                    var order = Orders.First(r => r.Id == reader.GetInt32(1));
                     if (order != null)
                     {
-                        var item = ItemStocks.Where(r => r.Id == reader.GetInt32(2)).FirstOrDefault();
+                        var item = ItemStocks.FirstOrDefault(r => r.Id == reader.GetInt32(2));
                         order.Items.Add(new OrderDetail()
                         {
                             Id = reader.GetInt32(0),
@@ -162,7 +177,7 @@ namespace LCTest.Controllers
             }
 
             Monitor.Exit(Orders);
-            conn.Close();
+            connforOrder.Close();
             logger.Info("载入完成");
         }
         #endregion
@@ -176,11 +191,8 @@ namespace LCTest.Controllers
         /// <returns></returns>
         public static Customer CheckUser(int Id)
         {
-            var u = Customers.Where(r => r.Id == Id).FirstOrDefault();
-            if (u != null)
-                return u;
-            else
-                return null;
+            var u = Customers.FirstOrDefault(r => r.Id == Id);
+            return u;
         }
 
 
@@ -198,14 +210,20 @@ namespace LCTest.Controllers
             //4，解锁
             Msg = "OK";
             MakeOrderResult result = MakeOrderResult.OK;
-            Monitor.TryEnter(ItemStocks, 2000);
-            bool flag = false;
+            //优先级低，只等待2秒
+            if (!Monitor.TryEnter(ItemStocks, 200))
+            {
+                Msg = "排队";
+                result = MakeOrderResult.LockedTimeOut;
+                return result;
+            }
+
             foreach (var orderDetail in order.Items)
             {
-                var item = ItemStocks.Where(r => r.Id == orderDetail.ItemId).FirstOrDefault();
+                var item = ItemStocks.FirstOrDefault(r => r.Id == orderDetail.ItemId);
                 if (item != null)
                 {
-                    if (item.Stock > 1)
+                    if (item.Stock >= 1)
                     {
                         item.Stock--;
                         item.IsModify = true;
@@ -223,50 +241,95 @@ namespace LCTest.Controllers
                     result = MakeOrderResult.Soldout;
                     break;
                 }
+                //Thread writeThread = new Thread(SaveItem);
+                //writeThread.Start();
             }
             Monitor.Exit(ItemStocks);
 
             if (result == MakeOrderResult.OK)
             {
                 order.Status = OrderStatus.Submited;
+                //内存订单启动子线程写入数据库，锁定内存变量
+                while (!Monitor.TryEnter(Orders, 200))
+                    Thread.Sleep(100);
                 Orders.Add(order);
+                //解锁
+                Monitor.Exit(Orders);
                 //多线程启动，写入数据库
-                Thread writeThread = new Thread(UpdateDatabase);
-                writeThread.Start();
+                //Thread writeThread = new Thread(SaveOrder);
+                //writeThread.Start();
             }
+            //解锁
+
             return result;
         }
 
+        public static List<OrderDetail> Bought(Int32 CustomerId)
+        {
+            while (!Monitor.TryEnter(Orders, 200))
+                Thread.Sleep(100);
+            List<OrderDetail> lists = new List<OrderDetail>();
+            Orders.Where(r => r.customerId == CustomerId)
+                .Select(r => r.Items).ForEach(i => lists.AddRange(i));
+            Monitor.Exit(Orders);
+            return lists;
+        }
 
         #endregion
 
         #region 数据库写入
-
+        /// <summary>
+        /// 商品数量更新
+        /// </summary>
+        private static void SaveItem()
+        {
+            while (!Monitor.TryEnter(ItemStocks, 200))
+                Thread.Sleep(100);
+            var writeItems = ItemStocks.Where(i => i.IsModify).ToList();
+            if (writeItems.Count > 0)
+            {
+                if (connforItem.State != ConnectionState.Open) connforItem.Open();
+                //商品（库存）修改
+                for (int i = 0; i < writeItems.Count; i++)
+                {
+                    string commandstr = string.Format("UPDATE EB_Item SET Stock = {0} WHERE Id = {1}",
+                        ItemStocks[i].Stock, ItemStocks[i].Id);
+                    using (SqlCommand command = new SqlCommand(commandstr, connforItem))
+                    {
+                        command.ExecuteNonQuery();
+                    }
+                    ItemStocks[i].IsModify = false;
+                }
+                connforItem.Close();
+            }
+            Monitor.Exit(ItemStocks);
+        }
         /// <summary>
         /// 写入数据库
         /// </summary>
-        private static void UpdateDatabase()
+        private static void SaveOrder()
         {
-            Thread.Sleep(1000);
-            int cnt = Orders.Where(o => o.Status == OrderStatus.Submited).Count();
+            while (!Monitor.TryEnter(Orders, 200))
+                Thread.Sleep(100);
+            int cnt = Orders.Count(o => o.Status == OrderStatus.Submited);
+
             if (cnt > 0)
             {
-                Monitor.TryEnter(ItemStocks, 2000);
-                var writeOrders = Orders.Where(o => o.Status == OrderStatus.Submited);
+                var writeOrders = Orders.Where(o => o.Status == OrderStatus.Submited).ToList();
                 //订单新增
 
-                if (conn.State != ConnectionState.Connecting) conn.Open();
-                foreach (var writeOrder in writeOrders)
+                if (connforOrder.State != ConnectionState.Open) connforOrder.Open();
+                for (var i = 0; i < writeOrders.Count(); i++)
                 {
                     string commandstr = string.Format("INSERT INTO EB_Order([customerId]) VALUES({0});SELECT @@IDENTITY",
-                        writeOrder.customerId);
-                    SqlCommand command = new SqlCommand(commandstr, conn);
+                                        writeOrders[i].customerId);
+                    SqlCommand command = new SqlCommand(commandstr, connforOrder);
                     int id = Convert.ToInt32(command.ExecuteScalar());
-                    writeOrder.Id = id;
-                    writeOrder.Status = OrderStatus.Saved;
+                    writeOrders[i].Id = id;
+                    writeOrders[i].Status = OrderStatus.Saved;
                     //插入明细
 
-                    foreach (var orderDetail in writeOrder.Items)
+                    foreach (var orderDetail in writeOrders[i].Items)
                     {
                         orderDetail.OrderId = id;
                         commandstr = string.Format("INSERT INTO EB_OrderDetail(OrderId,ItemId,Amount) VALUES({0},{1},1);SELECT @@IDENTITY",
@@ -275,19 +338,9 @@ namespace LCTest.Controllers
                         orderDetail.Id = Convert.ToInt32(command.ExecuteScalar());
                     }
                 }
-
-                var writeItems = ItemStocks.Where(i => i.IsModify);
-                //商品（库存）修改
-                foreach (var itemStock in writeItems)
-                {
-                    string commandstr = string.Format("UPDATE EB_Item SET Stock = {0} WHERE Id = {1}", itemStock.Stock, itemStock.Id);
-                    SqlCommand command = new SqlCommand(commandstr, conn);
-                    command.ExecuteNonQuery();
-                }
-
-                Monitor.Exit(ItemStocks);
+                connforOrder.Close();
             }
-
+            Monitor.Exit(Orders);
         }
         #endregion
 
