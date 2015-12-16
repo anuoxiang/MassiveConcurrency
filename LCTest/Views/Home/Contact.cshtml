@@ -1,21 +1,20 @@
 ﻿@{
     ViewBag.Title = "Contact";
 }
-@model List<LCTest.Models.Order>
+@model List<LCTest.Models.ItemStock>
 <hgroup class="title">
-    <h1>@ViewBag.Title.</h1>
+    <h1>结果</h1>
     <h2>@ViewBag.Message</h2>
 </hgroup>
 
 <section class="contact">
-    @foreach (var m in Model)
+    <h2>未保存：@ViewBag.UnSaved</h2>
+    <h2>已经保存：@ViewBag.Saved</h2>
+    <h2>购物车：@ViewBag.InCart</h2>
+    <h2>出售量：@ViewBag.Total</h2>
+    <h2>内存商品库</h2>
+    @foreach (var x in Model)
     {
-        <header>
-            <h3>@m.Id</h3>
-        </header>
-        <p>
-            <span class="label">Main:</span>
-            <span>425.555.0100</span>
-        </p>
+        <p>@x.Name &nbsp; @x.Stock &nbsp; @x.IsModify</p>    
     }
 </section>

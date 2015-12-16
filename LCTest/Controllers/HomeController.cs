@@ -61,14 +61,16 @@ namespace LCTest.Controllers
             //没有登录
             if (order == null || customer == null) return Json(false, JsonRequestBehavior.AllowGet);
             var item = MassiveOrder.ItemStocks.Where(r => r.Id == Id).FirstOrDefault();
-            //重复购买
+            if (item==null)
+                return Json(false, JsonRequestBehavior.AllowGet);
+            //购物车重复购买
+            
             if (order.Items.Where(r => r.ClassId == item.ClassId).Count() > 0)
                 return Json(false, JsonRequestBehavior.AllowGet);
-            //历史订单重复购买
-            List<OrderDetail> lists =
-                MassiveOrder.Bought(customer.Id);
-            if (lists.Where(r => r.ClassId == item.ClassId).Count() > 0)
+            //库存和历史订单判断是否可以购买
+            if (!MassiveOrder.AllowBuy(customer.Id,item))
                 return Json(false, JsonRequestBehavior.AllowGet);
+
             //加入购物车
             order.Items.Add(new OrderDetail
             {
@@ -132,33 +134,13 @@ namespace LCTest.Controllers
 
         public ActionResult Contact()
         {
-            Models.Customer usr = (Models.Customer)Session["customer"];
 
-            if (usr == null)
-                return RedirectToAction("Index");
-
-            List<Order> orders = new List<Order>();
-            using (SqlConnection conn = new SqlConnection())
-            {
-                conn.ConnectionString = "Data Source=192.168.1.2;Initial Catalog=LCTest;Integrated Security=false;User ID=sa;Password=Kdc123456;";
-                conn.Open();
-                SqlCommand command = new SqlCommand(string.Format("SELECT Id FROM EB_Order WHERE customerId = {0}", usr.Id), conn);
-                SqlDataReader reader = command.ExecuteReader();
-                if (reader.HasRows)
-                {
-                    while (reader.Read())
-                    {
-                        var order = new Order
-                        {
-                            Id = reader.GetInt32(0),
-                            customerId = reader.GetInt32(1)
-                        };
-                        orders.Add(order);
-                    }
-                }
-            }
-
-            return View(orders);
+            ViewBag.UnSaved = MassiveOrder.Orders.Count(o => o.Status == OrderStatus.Submited);
+            ViewBag.Saved = MassiveOrder.Orders.Count(o => o.Status == OrderStatus.Saved);
+            ViewBag.InCart = MassiveOrder.Orders.Count(o => o.Status == OrderStatus.InCart);
+            ViewBag.Total = MassiveOrder.Orders.Sum(o => o.Items.Count());
+            List<ItemStock> iss = MassiveOrder.ItemStocks;
+            return View(iss);
         }
     }
 }

@@ -37,8 +37,6 @@ namespace LCTest.Controllers
         private static Logger logger = LogManager.GetCurrentClassLogger();
 
         private static bool IsReady = false;
-        private const string ServerAddr = "192.168.1.2";
-
         //private const string connStr = "Data Source=192.168.1.2;Initial Catalog=LCTest;Integrated Security=false;User ID=sa;Password=Kdc123456;";
         private const string connStr = "Data Source=.\\SQLEXPRESS;Initial Catalog=LCTest;Integrated Security=true;";
         //private const string ServerAddr = "";
@@ -204,75 +202,154 @@ namespace LCTest.Controllers
         /// <returns></returns>
         public static MakeOrderResult MakeOrder(Customer customer, Order order, out string Msg)
         {
-            //1，锁定库存
-            //2，验证是否可以减去库存
-            //3，减去库存
-            //4，解锁
             Msg = "OK";
             MakeOrderResult result = MakeOrderResult.OK;
-            //优先级低，只等待2秒
-            if (!Monitor.TryEnter(ItemStocks, 200))
+            if (order.Items.Count == 0)
             {
-                Msg = "排队";
-                result = MakeOrderResult.LockedTimeOut;
+                Msg = "无效的订单";
+                result = MakeOrderResult.Err;
                 return result;
             }
 
-            foreach (var orderDetail in order.Items)
+
+            //优先级低，只等待2秒
+            //if (!Monitor.TryEnter(ItemStocks, 200))
+            //{
+            //    Msg = "排队";
+            //    result = MakeOrderResult.LockedTimeOut;
+            //    return result;
+            //}
+            List<ItemStock> bought = new List<ItemStock>();
+            lock (ItemStocks)
             {
-                var item = ItemStocks.FirstOrDefault(r => r.Id == orderDetail.ItemId);
-                if (item != null)
+                lock (Orders)
                 {
-                    if (item.Stock >= 1)
+                    bool flag = true;
+                    string Name = "";
+                    //判定所有余额是否足够
+                    foreach (var orderDetail in order.Items)
                     {
-                        item.Stock--;
-                        item.IsModify = true;
+                        var item = ItemStocks.FirstOrDefault(r => r.Id == orderDetail.ItemId);
+                        if (item != null)
+                        {
+                            if (item.Stock == 0)
+                            {
+                                Name = item.Name;
+                                flag = false;
+                                break;
+                            }
+                            bought.Add(item);
+                        }
+                        else
+                        {
+                            Name = orderDetail.Name;
+                            flag = false;
+                            break;
+                        }
+                    }
+                    //报告结果
+                    if (!flag)
+                    {
+                        Msg = string.Format("{0}已经抢完", Name);
+                        result = MakeOrderResult.Soldout;
                     }
                     else
                     {
-                        Msg = string.Format("{0}已经抢完", item.Name);
-                        result = MakeOrderResult.Soldout;
-                        break;
+                        //减去余额
+                        bought.ForEach(b =>
+                        {
+                            b.Stock--;
+                            b.IsModify = true;
+                        });
+
+                        order.Status = OrderStatus.Submited;
+
+                        //内存订单启动子线程写入数据库，锁定内存变量
+                        //while (!Monitor.TryEnter(Orders, 200))
+                        //    Thread.Sleep(100);
+
+                        Orders.Add(order);
+                        #region 数据库同步写入
+                        
+                        //写入数据库
+                        string commandstr;
+                        if (connforItem.State != ConnectionState.Open) connforItem.Open();
+                        //商品（库存）修改
+                        bought.ForEach(b =>
+                        {
+                            commandstr = string.Format("UPDATE EB_Item SET Stock = {0} WHERE Id = {1}",
+                                b.Stock, b.Id);
+                            using (SqlCommand command = new SqlCommand(commandstr, connforItem))
+                            {
+                                command.ExecuteNonQuery();
+                            }
+                            b.IsModify = false;
+                        });
+
+                        commandstr = string.Format("INSERT INTO EB_Order([customerId]) VALUES({0});SELECT @@IDENTITY",
+                                            order.customerId);
+                        using (SqlCommand command = new SqlCommand(commandstr, connforItem))
+                        {
+                            int id = Convert.ToInt32(command.ExecuteScalar());
+                            order.Id = id;
+                            order.Status = OrderStatus.Saved;
+                            //插入明细
+                        }
+                        order.Items.ForEach(b =>
+                        {
+                            b.OrderId = order.Id;
+                            commandstr =
+                                string.Format(
+                                    "INSERT INTO EB_OrderDetail(OrderId,ItemId,Amount) VALUES({0},{1},1);SELECT @@IDENTITY",
+                                    order.Id, b.ItemId);
+
+                            using (SqlCommand command = new SqlCommand(commandstr, connforItem))
+                            {
+                                b.Id = Convert.ToInt32(command.ExecuteScalar());
+                            }
+
+                        });
+
+                        connforItem.Close();
+                        #endregion
+
+                        //解锁
+                        //Monitor.Exit(Orders);
+                        //SaveOrder();
+                        //SaveItem();
                     }
                 }
-                else
-                {
-                    Msg = string.Format("{0}已经下架", orderDetail.Name);
-                    result = MakeOrderResult.Soldout;
-                    break;
-                }
-                //Thread writeThread = new Thread(SaveItem);
-                //writeThread.Start();
             }
-            Monitor.Exit(ItemStocks);
+            //Monitor.Exit(ItemStocks);
 
-            if (result == MakeOrderResult.OK)
-            {
-                order.Status = OrderStatus.Submited;
-                //内存订单启动子线程写入数据库，锁定内存变量
-                while (!Monitor.TryEnter(Orders, 200))
-                    Thread.Sleep(100);
-                Orders.Add(order);
-                //解锁
-                Monitor.Exit(Orders);
-                //多线程启动，写入数据库
-                //Thread writeThread = new Thread(SaveOrder);
-                //writeThread.Start();
-            }
-            //解锁
-
+            //多线程启动，写入数据库
+            Thread writeOrderThread = new Thread(SaveOrder);
+            writeOrderThread.Start();
+            Thread writeItemThread = new Thread(SaveItem);
+            writeItemThread.Start();
             return result;
         }
 
-        public static List<OrderDetail> Bought(Int32 CustomerId)
+        public static bool AllowBuy(Int32 CustomerId,ItemStock item)
         {
-            while (!Monitor.TryEnter(Orders, 200))
-                Thread.Sleep(100);
+            //while (!Monitor.TryEnter(Orders, 200))
+            //    Thread.Sleep(100);
             List<OrderDetail> lists = new List<OrderDetail>();
-            Orders.Where(r => r.customerId == CustomerId)
-                .Select(r => r.Items).ForEach(i => lists.AddRange(i));
-            Monitor.Exit(Orders);
-            return lists;
+            lock (Orders)
+            {
+                Orders.Where(r => r.customerId == CustomerId)
+                    .Select(r => r.Items).ForEach(i => lists.AddRange(i));
+            }
+            if (lists.Any(r => r.ClassId == item.ClassId))
+                return false;
+            lock (ItemStocks)
+            {
+                var firstOrDefault = ItemStocks.FirstOrDefault(r => r.Id == item.Id);
+                if (firstOrDefault != null && firstOrDefault.Stock == 0)
+                    return false;
+            }
+            //Monitor.Exit(Orders);
+            return true;
         }
 
         #endregion
@@ -283,64 +360,67 @@ namespace LCTest.Controllers
         /// </summary>
         private static void SaveItem()
         {
-            while (!Monitor.TryEnter(ItemStocks, 200))
-                Thread.Sleep(100);
-            var writeItems = ItemStocks.Where(i => i.IsModify).ToList();
-            if (writeItems.Count > 0)
+            //while (!Monitor.TryEnter(ItemStocks, 200))
+            //    Thread.Sleep(100);
+            lock (ItemStocks)
             {
-                if (connforItem.State != ConnectionState.Open) connforItem.Open();
-                //商品（库存）修改
-                for (int i = 0; i < writeItems.Count; i++)
+                var writeItems = ItemStocks.Where(i => i.IsModify).ToList();
+                if (writeItems.Count > 0)
                 {
-                    string commandstr = string.Format("UPDATE EB_Item SET Stock = {0} WHERE Id = {1}",
-                        ItemStocks[i].Stock, ItemStocks[i].Id);
-                    using (SqlCommand command = new SqlCommand(commandstr, connforItem))
+                    if (connforItem.State != ConnectionState.Open) connforItem.Open();
+                    //商品（库存）修改
+                    for (int i = 0; i < writeItems.Count; i++)
                     {
-                        command.ExecuteNonQuery();
+                        string commandstr = string.Format("UPDATE EB_Item SET Stock = {0} WHERE Id = {1}",
+                            writeItems[i].Stock, writeItems[i].Id);
+                        using (SqlCommand command = new SqlCommand(commandstr, connforItem))
+                            command.ExecuteNonQuery();
+                        
+                        writeItems[i].IsModify = false;
                     }
-                    ItemStocks[i].IsModify = false;
+                    connforItem.Close();
                 }
-                connforItem.Close();
             }
-            Monitor.Exit(ItemStocks);
+            //Monitor.Exit(ItemStocks);
         }
         /// <summary>
         /// 写入数据库
         /// </summary>
         private static void SaveOrder()
         {
-            while (!Monitor.TryEnter(Orders, 200))
-                Thread.Sleep(100);
-            int cnt = Orders.Count(o => o.Status == OrderStatus.Submited);
-
-            if (cnt > 0)
+            //while (!Monitor.TryEnter(Orders, 200))
+            //    Thread.Sleep(100);
+            lock (Orders)
             {
-                var writeOrders = Orders.Where(o => o.Status == OrderStatus.Submited).ToList();
-                //订单新增
-
-                if (connforOrder.State != ConnectionState.Open) connforOrder.Open();
-                for (var i = 0; i < writeOrders.Count(); i++)
+                int cnt = Orders.Count(o => o.Status == OrderStatus.Submited);
+                if (cnt > 0)
                 {
-                    string commandstr = string.Format("INSERT INTO EB_Order([customerId]) VALUES({0});SELECT @@IDENTITY",
-                                        writeOrders[i].customerId);
-                    SqlCommand command = new SqlCommand(commandstr, connforOrder);
-                    int id = Convert.ToInt32(command.ExecuteScalar());
-                    writeOrders[i].Id = id;
-                    writeOrders[i].Status = OrderStatus.Saved;
-                    //插入明细
-
-                    foreach (var orderDetail in writeOrders[i].Items)
+                    var writeOrders = Orders.Where(o => o.Status == OrderStatus.Submited).ToList();
+                    //订单新增
+                    if (connforOrder.State != ConnectionState.Open) connforOrder.Open();
+                    for (var i = 0; i < writeOrders.Count(); i++)
                     {
-                        orderDetail.OrderId = id;
-                        commandstr = string.Format("INSERT INTO EB_OrderDetail(OrderId,ItemId,Amount) VALUES({0},{1},1);SELECT @@IDENTITY",
-                        id, orderDetail.ItemId);
-                        command.CommandText = commandstr;
-                        orderDetail.Id = Convert.ToInt32(command.ExecuteScalar());
+                        string commandstr = string.Format("INSERT INTO EB_Order([customerId]) VALUES({0});SELECT @@IDENTITY",
+                                            writeOrders[i].customerId);
+                        SqlCommand command = new SqlCommand(commandstr, connforOrder);
+                        int id = Convert.ToInt32(command.ExecuteScalar());
+                        writeOrders[i].Id = id;
+                        writeOrders[i].Status = OrderStatus.Saved;
+                        //插入明细
+
+                        foreach (var orderDetail in writeOrders[i].Items)
+                        {
+                            orderDetail.OrderId = id;
+                            commandstr = string.Format("INSERT INTO EB_OrderDetail(OrderId,ItemId,Amount) VALUES({0},{1},1);SELECT @@IDENTITY",
+                            id, orderDetail.ItemId);
+                            command.CommandText = commandstr;
+                            orderDetail.Id = Convert.ToInt32(command.ExecuteScalar());
+                        }
                     }
+                    connforOrder.Close();
                 }
-                connforOrder.Close();
             }
-            Monitor.Exit(Orders);
+            //// Monitor.Exit(Orders);
         }
         #endregion
 
@@ -359,6 +439,10 @@ namespace LCTest.Controllers
         /// <summary>
         /// 抢完
         /// </summary>
-        Soldout
+        Soldout,
+        /// <summary>
+        /// 无效订单
+        /// </summary>
+        Err
     }
 }
